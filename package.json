@@ -1,5 +1,5 @@
 {
-  "name": "Thunderbird Tests Action",
+  "name": "action-thunderbird-tests",
   "version": "1.0.0",
   "description": "Run the Thunderbird test harness",
   "main": "src/loader.js",
