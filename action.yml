@@ -1,0 +1,18 @@
+name: "Thunderbird test harness"
+author: "Philipp Kewisch <mozilla@kewis.ch>"
+description: "Run your own tests using Thunderbird's test harness"
+inputs:
+  lightning:
+    description: "Enable Lightning when running tests"
+    required: false
+    default: true
+  version:
+    description: "The version to run on [nightly,beta,release]"
+    required: true
+    default: "nightly"
+  xpcshell:
+    description: "Run xpcshell tests from this directory"
+    required: false
+runs:
+  using: "node12"
+  main: "src/loader.js"
