@@ -2,6 +2,9 @@ name: "Thunderbird test harness"
 author: "Philipp Kewisch <mozilla@kewis.ch>"
 description: "Run your own tests using Thunderbird's test harness"
 inputs:
+  token:
+    description: "The github access token"
+    required: false
   lightning:
     description: "Enable Lightning when running tests"
     required: false

@@ -7,10 +7,12 @@ import * as core from "@actions/core";
 import * as exec from "@actions/exec";
 import * as tc from "@actions/tool-cache";
 import * as io from "@actions/io";
+import * as github from "@actions/github";
 
 import path from "path";
 import fs from "fs-extra";
 import request from "request-promise-native";
+import readline from "readline";
 
 const PIP_PACKAGES = [
 	"six==1.10.0",
@@ -154,12 +156,90 @@ async function createXpcshellManifest(buildPath, testPath, targetManifest) {
   return filename;
 }
 
+class CheckRun {
+  constructor(octokit, name, context) {
+    this.id = null;
+    this.octokit = octokit;
+    this.name = name;
+    this.context = context;
+  }
+
+  async create() {
+    let res = await this.octokit.checks.create({
+      ...this.context.repo,
+      head_sha: this.context.sha,
+      name: "Test: " + this.name,
+      status: "in_progress",
+      started_at: new Date().toISOString()
+    });
+
+    this.id = res.data.id;
+  }
+
+  async complete(pass, fail, annotations) {
+    await this.octokit.checks.update({
+      ...this.context.repo,
+      head_sha: this.context.sha,
+      check_run_id: this.id,
+      status: "completed",
+      completed_at: new Date().toISOString(),
+      conclusion: annotations.length ? "failure" : "success",
+      output: {
+        title: this.name,
+        summary: `${pass} checks passed, ${fail} checks failed`,
+        annotations: annotations
+      }
+    });
+  }
+}
+
+async function parseLog(logFile, baseDir) {
+  let rli = readline.createInterface({
+    input: fs.createReadStream(logFile),
+    terminal: false
+  });
+  let annotations = [];
+  let pass = 0;
+  let fail = 0;
+
+  for await (let line of rli) {
+    let data;
+    try {
+      data = JSON.parse(line);
+    } catch (e) {
+      continue;
+    }
+
+    if (data.action == "test_status" && data.status == "FAIL" && data.stack) {
+      fail++;
+      let stack = data.stack.split("\n");
+      let [file, , lineNr] = stack[0].split(":");
+      lineNr = parseInt(lineNr, 10);
+      annotations.push({
+        path: path.relative(baseDir, file),
+        start_line: lineNr,
+        end_line: lineNr,
+        annotation_level: "failure",
+        message: data.message,
+        title: "Test failure: " + data.subtest
+      });
+    } else if (data.action == "test_status" && data.status == "PASS") {
+      pass++;
+    }
+  }
+
+  rli.close();
+
+  return { pass, fail, annotations };
+}
+
 async function main() {
   let channel = core.getInput("channel", { required: true });
   let xpcshell = core.getInput("xpcshell");
   let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
   let repoBase = process.env.GITHUB_WORKSPACE; // TODO Docs say GITHUB_WORKSPACE is the parent to the repo, but in practice it is not.
   let venv = path.join(buildout, "venv");
+  let octokit = new github.GitHub(core.getInput("token"));
 
   let testTypes = ["common"];
   if (xpcshell) {
@@ -207,21 +287,35 @@ async function main() {
     core.debug("Running xpcshell tests");
     let pluginpath = path.join(await findApp(appPath, "Resources"), "plugins");
     let manifest = path.join(repoBase, xpcshell);
+    let xpcshellLog = path.join(buildout, "xpcshell-log.txt");
     if (core.getInput("lightning") == "true") {
       manifest = await createXpcshellManifest(buildout, testPath, manifest);
     }
 
-    await exec.exec(python, [
-      path.join(testPath, "xpcshell", "runxpcshelltests.py"),
-      "--setpref", "media.peerconnection.mtransport_process=false",
-      "--setpref", "network.process.enabled=false",
-      "--test-plugin-path", pluginpath,
-      "--utility-path", path.join(testPath, "bin"),
-      "--testing-modules-dir", path.join(testPath, "modules"),
-      "--xpcshell", path.join(binPath, "xpcshell"),
-      "--manifest", manifest,
-      "--verbose",
-    ]);
+    let check = new CheckRun(octokit, "xpcshell", github.context);
+    await check.create();
+
+    try {
+      await exec.exec(python, [
+        path.join(testPath, "xpcshell", "runxpcshelltests.py"),
+        "--log-raw", xpcshellLog,
+        "--keep-going",
+        "--setpref", "media.peerconnection.mtransport_process=false",
+        "--setpref", "network.process.enabled=false",
+        "--test-plugin-path", pluginpath,
+        "--utility-path", path.join(testPath, "bin"),
+        "--testing-modules-dir", path.join(testPath, "modules"),
+        "--xpcshell", path.join(binPath, "xpcshell"),
+        "--manifest", manifest,
+        "--verbose",
+      ]);
+    } catch (e) {
+      core.setFailed("xpcshell tests failed: " + e);
+    }
+
+    let { pass, fail, annotations } = await parseLog(xpcshellLog, repoBase);
+    await check.complete(pass, fail, annotations);
+
     core.endGroup();
   }
 }
