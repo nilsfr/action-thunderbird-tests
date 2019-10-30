@@ -31,6 +31,16 @@ const DOWNLOAD_BASE_MAP = {
  release: ""
 };
 
+async function getBuildId(base, version, platform) {
+  let info = await request({
+    url: `${base}/thunderbird-${version}.en-US.${platform}.json`,
+    json: true
+  });
+
+  return info.buildid;
+}
+
+
 async function getThunderbirdVersion(channel) {
   let versions = await request({
     uri: "https://product-details.mozilla.org/1.0/thunderbird_versions.json",
@@ -112,23 +122,40 @@ async function download(channel, testTypes, destination) {
   let version = await getThunderbirdVersion(channel);
   let { platform, suffix } = getPlatform();
   let base = DOWNLOAD_BASE_MAP[channel];
+  let buildId = await getBuildId(base, version, platform);
+  let versionId = "0.0." + buildId;
+  let testPackageName = "thunderbird-tests-" + testTypes.join("-");
 
-  let testout = path.join(destination, "tests");
-  let appout = path.join(destination, "application");
+  let testPath = tc.find(testPackageName, versionId, platform);
+  let appPath = tc.find("thunderbird", versionId, platform);
+  let binPath = appPath ? await findApp(appPath) : null;
 
-  let promises = testTypes.map((testType) => {
-    let testUrl = `${base}/thunderbird-${version}.en-US.${platform}.${testType}.tests.tar.gz`;
-    return downloadAndExtract(testUrl, testout);
-  });
+  if (!testPath || !appPath) {
+    testPath = path.join(destination, "tests");
+    appPath = path.join(destination, "application");
 
-  promises.push(downloadAndExtract(
-    `${base}/thunderbird-${version}.en-US.${platform}.${suffix}`,
-    appout
- ));
+    let promises = testTypes.map((testType) => {
+      let testUrl = `${base}/thunderbird-${version}.en-US.${platform}.${testType}.tests.tar.gz`;
+      return downloadAndExtract(testUrl, testPath);
+    });
 
-  await Promise.all(promises);
+    promises.push(
+      downloadAndExtract(`${base}/thunderbird-${version}.en-US.${platform}.${suffix}`, appPath)
+    );
 
-  return { testPath: testout, appPath: appout };
+    await Promise.all(promises);
+
+    // Copy xpcshell and components over to the binary path
+    binPath = await findApp(appPath);
+    await fs.copy(path.join(testPath, "bin", "xpcshell"), path.join(binPath, "xpcshell"));
+    await fs.copy(path.join(testPath, "bin", "components"), path.join(binPath, "components"));
+
+    // Cache directories
+    testPath = await tc.cacheDir(testPath, testPackageName, versionId, platform);
+    appPath = await tc.cacheDir(appPath, "thunderbird", versionId, platform);
+  }
+
+  return { testPath, appPath, binPath };
 }
 
 async function findApp(base, container="MacOS") {
@@ -243,29 +270,7 @@ async function parseLog(logFile, baseDir) {
   return { pass, fail, annotations };
 }
 
-async function main() {
-  let channel = core.getInput("channel", { required: true });
-  let xpcshell = core.getInput("xpcshell");
-  let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
-  let repoBase = process.env.GITHUB_WORKSPACE; // TODO Docs say GITHUB_WORKSPACE is the parent to the repo, but in practice it is not.
-  let venv = path.join(buildout, "venv");
-
-  let testTypes = ["common"];
-  if (xpcshell) {
-    testTypes.push("xpcshell");
-  }
-
-  core.startGroup("Test harness setup");
-
-  let { testPath, appPath } = await download(channel, testTypes, buildout);
-
-  // Copy xpcshell and components over to the binary path
-  core.debug("Copying xpcshell to application path " + appPath);
-  let binPath = await findApp(appPath);
-  await fs.copy(path.join(testPath, "bin", "xpcshell"), path.join(binPath, "xpcshell"));
-  await fs.copy(path.join(testPath, "bin", "components"), path.join(binPath, "components"));
-
-  // set up virtualenv
+async function setupPython(venv, testPath) {
   let venvBin;
   try {
     venvBin = await io.which("virtualenv", true);
@@ -278,7 +283,6 @@ async function main() {
   await exec.exec(venvBin, [venv]);
 
   let pip = path.join(venv, "bin", "pip");
-  let python = path.join(venv, "bin", "python");
 
   // install pip packages
   await exec.exec(pip, ["install", ...PIP_PACKAGES]);
@@ -288,6 +292,31 @@ async function main() {
     { cwd: path.join(testPath, "config") }
   );
   await exec.exec(pip, ["freeze"]);
+}
+
+async function main() {
+  let channel = core.getInput("channel", { required: true });
+  let xpcshell = core.getInput("xpcshell");
+  let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
+  let repoBase = process.env.GITHUB_WORKSPACE; // TODO Docs say GITHUB_WORKSPACE is the parent to the repo, but in practice it is not.
+
+  let testTypes = ["common"];
+  if (xpcshell) {
+    testTypes.push("xpcshell");
+  }
+
+  core.startGroup("Test harness setup");
+
+  let { testPath, appPath, binPath } = await download(channel, testTypes, buildout);
+
+  let venv = path.join(buildout, "venv");
+  let python = path.join(venv, "bin", "python");
+
+  if (await fs.pathExists(venv)) {
+    core.warning(`${venv} already exists, skipping package setup`);
+  } else {
+    await setupPython(venv, testPath);
+  }
   core.endGroup();
 
   // Run xpcshell tests
