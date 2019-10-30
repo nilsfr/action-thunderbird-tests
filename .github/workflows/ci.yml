@@ -1,5 +1,5 @@
 name: "Thunderbird Tests Action"
-on: [push,pull_request]
+on: [push, pull_request]
 
 jobs:
   lint:
@@ -13,4 +13,17 @@ jobs:
         uses: gimenete/eslint-action@1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  test:
+    name: "Test"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v1
 
+      - name: "Run Tests"
+        uses: "./"
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          lightning: true
+          channel: nightly
+          xpcshell: test/xpcshell.ini
