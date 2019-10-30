@@ -36,3 +36,4 @@ default config options)
 xpcshell is currently the only supported test harness, though support for mochitests or mozharness
 could be viable.
 
+If you don't pass the `token` it should still work, but no check runs will be created.

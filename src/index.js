@@ -157,14 +157,20 @@ async function createXpcshellManifest(buildPath, testPath, targetManifest) {
 }
 
 class CheckRun {
-  constructor(octokit, name, context) {
+  constructor(name, context, token) {
     this.id = null;
-    this.octokit = octokit;
     this.name = name;
     this.context = context;
+    this.octokit = new github.GitHub(token);
+
+    this.ready = !!token;
   }
 
   async create() {
+    if (!this.ready) {
+      return;
+    }
+
     let res = await this.octokit.checks.create({
       ...this.context.repo,
       head_sha: this.context.sha,
@@ -177,6 +183,10 @@ class CheckRun {
   }
 
   async complete(pass, fail, annotations) {
+    if (!this.ready) {
+      return;
+    }
+
     await this.octokit.checks.update({
       ...this.context.repo,
       head_sha: this.context.sha,
@@ -239,7 +249,6 @@ async function main() {
   let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
   let repoBase = process.env.GITHUB_WORKSPACE; // TODO Docs say GITHUB_WORKSPACE is the parent to the repo, but in practice it is not.
   let venv = path.join(buildout, "venv");
-  let octokit = new github.GitHub(core.getInput("token"));
 
   let testTypes = ["common"];
   if (xpcshell) {
@@ -292,7 +301,7 @@ async function main() {
       manifest = await createXpcshellManifest(buildout, testPath, manifest);
     }
 
-    let check = new CheckRun(octokit, "xpcshell", github.context);
+    let check = new CheckRun("xpcshell", github.context, core.getInput("token"));
     await check.create();
 
     try {
