@@ -9,7 +9,7 @@ inputs:
     description: "Enable Lightning when running tests"
     required: false
     default: true
-  version:
+  channel:
     description: "The version to run on [nightly,beta,release]"
     required: true
     default: "nightly"
