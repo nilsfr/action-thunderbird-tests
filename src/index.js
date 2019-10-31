@@ -5,14 +5,22 @@
 
 import * as core from "@actions/core";
 import * as exec from "@actions/exec";
-import * as tc from "@actions/tool-cache";
 import * as io from "@actions/io";
 import * as github from "@actions/github";
+
+// The tool cache tries to remove the env variables on import, so we have to do our command line
+// setup first. This would normally just be: import * as tc from "@actions/tool-cache";
+var tc;
 
 import path from "path";
 import fs from "fs-extra";
 import request from "request-promise-native";
 import readline from "readline";
+import { URL } from "url";
+import yargs from "yargs";
+
+import CheckRun from "./checkrun";
+import { findApp, execOut } from "./utils";
 
 const PIP_PACKAGES = [
 	"six==1.10.0",
@@ -39,7 +47,6 @@ async function getBuildId(base, version, platform) {
 
   return info.buildid;
 }
-
 
 async function getThunderbirdVersion(channel) {
   let versions = await request({
@@ -77,20 +84,6 @@ function getPlatform() {
   }[platform];
 
   return { platform, suffix };
-}
-
-async function execOut(argv0, args, options={}) {
-  let output = "";
-  await exec.exec(await io.which("python", true), ["-m", "site", "--user-base"], {
-    ...options,
-    listeners: {
-      stdout: (data) => {
-        output += data.toString();
-      }
-    }
-  });
-
-  return output.trim();
 }
 
 async function downloadAndExtract(url, destination) {
@@ -158,17 +151,6 @@ async function download(channel, testTypes, destination) {
   return { testPath, appPath, binPath };
 }
 
-async function findApp(base, container="MacOS") {
-  if (process.platform == "darwin") {
-    let files = await fs.readdir(base);
-    let app = files.find(file => file.endsWith(".app"));
-
-    return path.join(base, app, "Contents", container);
-  } else {
-    return path.join(base, "thunderbird");
-  }
-}
-
 async function createXpcshellManifest(buildPath, testPath, targetManifest) {
   let lightning = path.join(testPath, "xpcshell/tests/comm/calendar/test/unit");
 
@@ -181,53 +163,6 @@ async function createXpcshellManifest(buildPath, testPath, targetManifest) {
   await fs.writeFile(filename, content);
 
   return filename;
-}
-
-class CheckRun {
-  constructor(name, context, token) {
-    this.id = null;
-    this.name = name;
-    this.context = context;
-    this.octokit = new github.GitHub(token);
-
-    this.ready = !!token;
-  }
-
-  async create() {
-    if (!this.ready) {
-      return;
-    }
-
-    let res = await this.octokit.checks.create({
-      ...this.context.repo,
-      head_sha: this.context.sha,
-      name: "Test: " + this.name,
-      status: "in_progress",
-      started_at: new Date().toISOString()
-    });
-
-    this.id = res.data.id;
-  }
-
-  async complete(pass, fail, annotations) {
-    if (!this.ready) {
-      return;
-    }
-
-    await this.octokit.checks.update({
-      ...this.context.repo,
-      head_sha: this.context.sha,
-      check_run_id: this.id,
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      conclusion: annotations.length ? "failure" : "success",
-      output: {
-        title: this.name,
-        summary: `${pass} checks passed, ${fail} checks failed`,
-        annotations: annotations
-      }
-    });
-  }
 }
 
 async function parseLog(logFile, baseDir) {
@@ -295,6 +230,9 @@ async function setupPython(venv, testPath) {
 }
 
 async function main() {
+  await setupEnv();
+  tc = await import("@actions/tool-cache");
+
   let channel = core.getInput("channel", { required: true });
   let xpcshell = core.getInput("xpcshell");
   let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
@@ -355,6 +293,75 @@ async function main() {
     await check.complete(pass, fail, annotations);
 
     core.endGroup();
+  }
+}
+
+async function setupEnv() {
+  if (!process.env.GITHUB_ACTION) {
+    // We are not running as a github action, so we'll assume we are running from the command line
+    // and will fill nr environment to accommodate.
+
+    let packageData = JSON.parse(await fs.readFile("package.json"));
+    let repo = new URL(packageData.repository.url);
+
+    if (repo.hostname != "github.com") {
+      throw new Error("Repository details in package.json don't point to a github repo");
+    }
+
+    let argv = yargs
+      .option("c", {
+        alias: "channel",
+        default: "nightly",
+        describe: "The channel to run on",
+        choices: Object.keys(DOWNLOAD_BASE_MAP)
+      })
+      .option("t", {
+        alias: "token",
+        default: "",
+        describe: "The GitHub access token",
+      })
+      .option("lightning", {
+        boolean: true,
+        default: true,
+        describe: "Enable Lightning when running tests (use --no-lightning to disable)"
+      })
+      .option("tempdir", {
+        default: "build/tmp",
+        describe: "The temporary directory for the runner"
+      })
+      .option("cachedir", {
+        default: "build/cache",
+        describe: "The tool cache directory for the runner"
+      })
+      .command("$0 <xpcshell>", "Run tests in the testing framework used by Thunderbird", (subyargs) => {
+        subyargs.positional("xpcshell", {
+          describe: "The path to the xpcshell.ini"
+        });
+      })
+      .wrap(120)
+      .argv;
+
+    await Promise.all([fs.mkdirp(argv.cachedir), fs.mkdirp(argv.tempdir)]);
+
+    let env = {
+      GITHUB_WORKSPACE: process.cwd(),
+      GITHUB_WORKFLOW: "action-thunderbird-tests",
+      GITHUB_REPOSITORY: repo.pathname.substr(1).replace(/\.git$/i, ""),
+      GITHUB_SHA: await execOut("git", ["rev-parse", "HEAD"]),
+
+      INPUT_TOKEN: argv.token,
+      INPUT_LIGHTNING: argv.lightning.toString(),
+      INPUT_CHANNEL: argv.channel,
+      INPUT_XPCSHELL: argv.xpcshell,
+      RUNNER_TMP: path.resolve(argv.tempdir),
+      RUNNER_TOOL_CACHE: path.resolve(argv.cachedir),
+    };
+
+    console.log("Using the following configuration:");
+    console.log(env);
+
+    process.env = Object.assign(process.env, env);
+    console.log(process.env);
   }
 }
 

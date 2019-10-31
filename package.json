@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Run the Thunderbird test harness",
   "main": "src/loader.js",
+  "bin": "src/loader.js",
   "dependencies": {
     "@actions/core": "^1.1.0",
     "@actions/exec": "^1.0.1",
@@ -12,7 +13,8 @@
     "esm": "^3.2.25",
     "fs-extra": "^8.1.0",
     "request": "^2.88.0",
-    "request-promise-native": "^1.0.7"
+    "request-promise-native": "^1.0.7",
+    "yargs": "^14.2.0"
   },
   "devDependencies": {
     "eslint": "^6.2.0"

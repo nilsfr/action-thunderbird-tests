@@ -37,3 +37,19 @@ xpcshell is currently the only supported test harness, though support for mochit
 could be viable.
 
 If you don't pass the `token` it should still work, but no check runs will be created.
+
+
+Running locally
+---------------
+
+The package provides a binary that can be run locally. You could add the following to your package.json:
+
+```json
+  "scripts": {
+    "test": "action-thunderbird-tests test/xpcshell/xpcshell.ini",
+  }
+```
+
+Running `npm test` will then run the Thunderbird tests. Be sure to run this in the base directory of
+your package. Most configuration will be inferred, but you can check out the help options in case
+you want to customize.

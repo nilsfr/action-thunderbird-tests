@@ -10,7 +10,7 @@ module.exports = {
     "es6": true,
   },
   "parserOptions": {
-    "ecmaVersion": 10,
+    "ecmaVersion": 11,
     "sourceType": "module"
   },
 
@@ -495,7 +495,10 @@ module.exports = {
           "Cu",
           "Cr",
           /* node */
-          "fs"
+          "fs",
+          /* github actions */
+          "tc",
+          "io",
         ],
       },
     ],
