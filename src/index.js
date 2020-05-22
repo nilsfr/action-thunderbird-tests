@@ -36,30 +36,29 @@ const PIP_PACKAGES = [
 const DOWNLOAD_BASE_MAP = {
  nightly: "https://ftp.mozilla.org/pub/thunderbird/nightly/latest-comm-central",
  beta: "", // TODO
- release: ""
+ release: "https://ftp.mozilla.org/pub/thunderbird/candidates"
 };
 
-async function getBuildId(base, version, platform) {
+async function getBuildId(url) {
   let info = await request({
-    url: `${base}/thunderbird-${version}.en-US.${platform}.json`,
+    url: url,
     json: true
   });
 
   return info.buildid;
 }
 
-async function getThunderbirdVersion(channel) {
+async function getThunderbirdVersions() {
   let versions = await request({
     uri: "https://product-details.mozilla.org/1.0/thunderbird_versions.json",
     json: true
   });
 
-  switch (channel) {
-    case "nightly": return versions.LATEST_THUNDERBIRD_NIGHTLY_VERSION;
-    case "beta": return versions.LATEST_THUNDERBIRD_DEVEL_VERSION;
-    case "release": return versions.LATEST_THUNDERBIRD_VERSION;
-    default: return 0;
-  }
+  return {
+    "nightly": versions.LATEST_THUNDERBIRD_NIGHTLY_VERSION,
+    "beta": versions.LATEST_THUNDERBIRD_DEVEL_VERSION,
+    "release": versions.LATEST_THUNDERBIRD_VERSION
+  };
 }
 
 function getPlatform() {
@@ -112,40 +111,61 @@ async function downloadAndExtract(url, destination) {
 }
 
 async function download(channel, testTypes, destination) {
-  let version = await getThunderbirdVersion(channel);
+  let versions = await getThunderbirdVersions();
   let { platform, suffix } = getPlatform();
+  let version = versions[channel];
   let base = DOWNLOAD_BASE_MAP[channel];
-  let buildId = await getBuildId(base, version, platform);
+  let buildId;
+  if (channel === "release") {
+    buildId = await getBuildId(`${base}/${version}-candidates/build1/${platform}/en-US/thunderbird-${version}.json`);
+  } else {
+    buildId = await getBuildId(`${base}/thunderbird-${version}.en-US.${platform}.json`);
+  }
   let versionId = "0.0." + buildId;
   let testPackageName = "thunderbird-tests-" + testTypes.join("-");
-
   let testPath = tc.find(testPackageName, versionId, platform);
   let appPath = tc.find("thunderbird", versionId, platform);
   let binPath = appPath ? await findApp(appPath) : null;
 
-  if (!testPath || !appPath) {
-    testPath = path.join(destination, "tests");
-    appPath = path.join(destination, "application");
-
-    let promises = testTypes.map((testType) => {
-      let testUrl = `${base}/thunderbird-${version}.en-US.${platform}.${testType}.tests.tar.gz`;
-      return downloadAndExtract(testUrl, testPath);
-    });
-
+  let promises = [];
+  let destTestPath = path.join(destination, "tests");
+  let destAppPath = path.join(destination, "application");
+  if (!testPath) {
+    promises.push(testTypes.map((testType) => {
+      let testUrl;
+      if (channel === "release") {
+        testUrl = `${base}/${version}-candidates/build1/${platform}/en-US/thunderbird-${version}.${testType}.tests.tar.gz`;
+      } else {
+        testUrl = `${base}/thunderbird-${version}.en-US.${platform}.${testType}.tests.tar.gz`;
+      }
+      return downloadAndExtract(testUrl, destTestPath);
+    }));
+  }
+  if (!appPath) {
+    let appUrl;
+    if (channel === "release") {
+      appUrl = `${base}/${version}-candidates/build1/${platform}/en-US/thunderbird-${version}.${suffix}`;
+    } else {
+      appUrl = `${base}/thunderbird-${version}.en-US.${platform}.${suffix}`;
+    }
     promises.push(
-      downloadAndExtract(`${base}/thunderbird-${version}.en-US.${platform}.${suffix}`, appPath)
+      downloadAndExtract(appUrl, destAppPath)
     );
-
+  }
+  if (promises) {
     await Promise.all(promises);
-
-    // Copy xpcshell and components over to the binary path
-    binPath = await findApp(appPath);
-    await fs.copy(path.join(testPath, "bin", "xpcshell"), path.join(binPath, "xpcshell"));
-    await fs.copy(path.join(testPath, "bin", "components"), path.join(binPath, "components"));
-
-    // Cache directories
-    testPath = await tc.cacheDir(testPath, testPackageName, versionId, platform);
-    appPath = await tc.cacheDir(appPath, "thunderbird", versionId, platform);
+    binPath = await findApp(destAppPath);
+    if (!testPath) {
+      // Copy xpcshell and components over to the binary path
+      await fs.copy(path.join(destTestPath, "bin", "xpcshell"), path.join(binPath, "xpcshell"));
+      await fs.copy(path.join(destTestPath, "bin", "components"), path.join(binPath, "components"));
+      // Cache directory
+      testPath = await tc.cacheDir(destTestPath, testPackageName, versionId, platform);
+    }
+    if (!appPath) {
+      // Cache directory
+      appPath = await tc.cacheDir(destAppPath, "thunderbird", versionId, platform);
+    }
   }
 
   return { testPath, appPath, binPath };
