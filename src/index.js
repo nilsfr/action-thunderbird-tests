@@ -110,10 +110,12 @@ async function downloadAndExtract(url, destination) {
   }
 }
 
-async function download(channel, testTypes, destination) {
+async function download(channel, testTypes, destination, version) {
   let versions = await getThunderbirdVersions();
   let { platform, suffix } = getPlatform();
-  let version = versions[channel];
+  if (version === null) {
+    version = versions[channel];
+  }
   let base = DOWNLOAD_BASE_MAP[channel];
   let buildId;
   if (channel === "release") {
@@ -254,6 +256,7 @@ async function main() {
   tc = await import("@actions/tool-cache");
 
   let channel = core.getInput("channel", { required: true });
+  let version = core.getInput("thunderbird_version");
   let xpcshell = core.getInput("xpcshell");
   let buildout = path.join(process.env.GITHUB_WORKSPACE, "build");
   let repoBase = process.env.GITHUB_WORKSPACE; // TODO Docs say GITHUB_WORKSPACE is the parent to the repo, but in practice it is not.
@@ -265,7 +268,8 @@ async function main() {
 
   core.startGroup("Test harness setup");
 
-  let { testPath, appPath, binPath } = await download(channel, testTypes, buildout);
+  let { testPath, appPath, binPath } = await download(
+      channel, testTypes, buildout, version);
 
   let venv = path.join(buildout, "venv");
   let python = path.join(venv, "bin", "python");
@@ -284,7 +288,7 @@ async function main() {
     let pluginpath = path.join(await findApp(appPath, "Resources"), "plugins");
     let manifest = path.join(repoBase, xpcshell);
     let xpcshellLog = path.join(buildout, "xpcshell-log.txt");
-    if (core.getInput("lightning") == "true") {
+    if (core.getInput("lightning") === "true") {
       manifest = await createXpcshellManifest(buildout, testPath, manifest);
     }
 
@@ -324,7 +328,7 @@ async function setupEnv() {
     let packageData = JSON.parse(await fs.readFile("package.json"));
     let repo = new URL(packageData.repository.url);
 
-    if (repo.hostname != "github.com") {
+    if (repo.hostname !== "github.com") {
       throw new Error("Repository details in package.json don't point to a github repo");
     }
 
@@ -334,6 +338,11 @@ async function setupEnv() {
         default: "nightly",
         describe: "The channel to run on",
         choices: Object.keys(DOWNLOAD_BASE_MAP)
+      })
+      .option("V", {
+        alias: "thunderbird_version",
+        default: null,
+        describe: "The version of Thunderbird"
       })
       .option("t", {
         alias: "token",
@@ -373,7 +382,8 @@ async function setupEnv() {
       INPUT_LIGHTNING: argv.lightning.toString(),
       INPUT_CHANNEL: argv.channel,
       INPUT_XPCSHELL: argv.xpcshell,
-      RUNNER_TMP: path.resolve(argv.tempdir),
+      INPUT_THUNDERBIRD_VERSION: argv.thunderbird_version,
+      RUNNER_TEMP: path.resolve(argv.tempdir),
       RUNNER_TOOL_CACHE: path.resolve(argv.cachedir),
     };
 
